@@ -1,0 +1,185 @@
+version: "4.1"
+name: BLE_UART
+type: RISC-V
+deviceName: null
+packDir: null
+srcDirs:
+  - APP
+  - Profile
+virtualFolder:
+  name: <virtual_root>
+  files: []
+  folders:
+    - name: HAL
+      files:
+        - path: ../HAL/SLEEP.c
+        - path: ../HAL/RTC.c
+        - path: ../HAL/MCU.c
+        - path: ../HAL/LED.c
+        - path: ../HAL/KEY.c
+      folders:
+        - name: include
+          files:
+            - path: ../HAL/include/SLEEP.h
+            - path: ../HAL/include/RTC.h
+            - path: ../HAL/include/LED.h
+            - path: ../HAL/include/KEY.h
+            - path: ../HAL/include/HAL.h
+            - path: ../HAL/include/config.h
+          folders: []
+    - name: LIB
+      files:
+        - path: ../LIB/CH58xBLE_ROM.h
+        - path: ../LIB/CH58xBLE_LIB.h
+      folders: []
+    - name: Ld
+      files: []
+      folders: []
+    - name: RVMSIS
+      files:
+        - path: ../../SRC/RVMSIS/core_riscv.h
+        - path: ../../SRC/RVMSIS/core_riscv.c
+      folders: []
+    - name: Startup
+      files:
+        - path: ../../SRC/Startup/startup_CH583.S
+      folders: []
+    - name: StdPeriphDriver
+      files:
+        - path: ../../SRC/StdPeriphDriver/CH58x_usbhostClass.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_usbhostBase.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_usbdev.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_usb2hostClass.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_usb2hostBase.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_usb2dev.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_uart3.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_uart2.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_uart1.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_uart0.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_timer3.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_timer2.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_timer1.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_timer0.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_sys.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_spi1.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_spi0.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_pwr.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_pwm.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_i2c.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_gpio.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_flash.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_clk.c
+        - path: ../../SRC/StdPeriphDriver/CH58x_adc.c
+      folders:
+        - name: inc
+          files:
+            - path: ../../SRC/StdPeriphDriver/inc/ISP583.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_usbhost.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_usbdev.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_uart.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_timer.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_sys.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_spi.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_pwr.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_pwm.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_i2c.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_gpio.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_flash.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_common.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_clk.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH58x_adc.h
+            - path: ../../SRC/StdPeriphDriver/inc/CH583SFR.h
+          folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: 809fbe25ee70cfb3919e8880e6b0e1b7
+targets:
+  obj:
+    cppPreprocessAttrs:
+      defineList:
+        - DEBUG=1
+        - CH583
+      incList:
+        - APP/include
+        - Profile/include
+        - APP/2g4
+        - APP/app_drv_fifo
+        - APP/ble_uart_service
+        - RVMSIS
+        - LIB
+        - Ld
+        - HAL/include
+        - StdPeriphDriver/inc
+      libList:
+        - .
+        - LIB
+        - StdPeriphDriver
+    excludeList:
+      - APP/ble_uart_service/ble_uart_service.c
+      - APP/ble_uart_service/ble_uart_service_same_char.c
+      - APP/ble_uart_service/ble_uart_service_same_16bit_char.c
+      - <virtual_root>/HAL/Profile
+      - <virtual_root>/HAL/KEY.c
+      - <virtual_root>/HAL/LED.c
+      - <virtual_root>/StdPeriphDriver/CH57x_usbdev.c
+      - <virtual_root>/StdPeriphDriver/CH57x_usbhostClass.c
+      - <virtual_root>/StdPeriphDriver/CH57x_usbhostBase.c
+      - <virtual_root>/StdPeriphDriver/CH57x_pwm.c
+      - <virtual_root>/StdPeriphDriver/CH57x_spi0.c
+      - <virtual_root>/StdPeriphDriver/CH57x_timer1.c
+      - <virtual_root>/StdPeriphDriver/CH57x_timer2.c
+      - <virtual_root>/StdPeriphDriver/CH57x_timer3.c
+      - <virtual_root>/StdPeriphDriver/CH57x_uart0.c
+      - <virtual_root>/StdPeriphDriver/CH57x_uart2.c
+    toolchain: RISCV_GCC
+    toolchainConfigMap:
+      RISCV_GCC:
+        linkerScriptPath: Ld/Link.ld
+        options:
+          version: 2
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: -Wl,-Bstatic
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            CXX_FLAGS: ""
+            C_FLAGS: -Wl,-Bstatic
+            language-c: gnu99
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-size
+            signed-char: true
+            warnings: all-warnings
+          global:
+            abi: ilp32
+            arch: rv32imac
+            code-model: medlow
+            misc-control:
+              - -fmessage-length=0
+              - -fno-common
+            output-debug-info: enable
+          linker:
+            $outputTaskExcludes:
+              - .bin
+            LD_FLAGS: -nostartfiles -Xlinker --print-memory-usage --specs=nano.specs --specs=nosys.specs
+            LIB_FLAGS: -lISP583 -lCH58xBLE
+            output-format: elf
+            remove-unused-input-sections: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: wlink
+        target: wch-riscv
+    uploader: OpenOCD
