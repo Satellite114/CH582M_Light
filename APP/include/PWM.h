@@ -1,32 +1,101 @@
+/********************************** (C) COPYRIGHT *******************************
+ * File Name          : PWM.h
+ * Author             : 
+ * Version            : V2.0
+ * Date               : 2025/12/01
+ * Description        : 互补PWM控制模块头文件（基于TMR0定时器中断实现）
+ *                      实现真正的互补PWM输出（不重叠，顺序输出）
+ *                      - PWM频率：约80kHz (实际78.43kHz)
+ *                      - 分辨率：100步
+ *                      - PWM1在0到duty1时间段输出高电平
+ *                      - PWM2在duty1到duty1+duty2时间段输出高电平
+ *                      - 总占空比可调，两个PWM之间的分配比例可调
+ *******************************************************************************/
+
 #ifndef __PWM_H__
 #define __PWM_H__
 
-#include <stdbool.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "CH58x_common.h"
-#include "CH58x_pwm.h"
 
-// PA12 - PWM4
-// PA13 - PWM5
-// PB0 - PWM6
-// PB4 - PWM7
-// PB6 - PWM8
-// PB7 - PWM9
-// PB14 - PWM10
+/**
+ * @brief  PWM通道定义
+ */
+#define PWM_CHANNEL_1    CH_PWM4    // PWM通道1使用PWM4
+#define PWM_CHANNEL_2    CH_PWM5    // PWM通道2使用PWM5
 
-typedef enum {
-    PWM_COMPLEMENTARY_PAIR_4_5 = 0,
-    PWM_COMPLEMENTARY_PAIR_6_7,
-    PWM_COMPLEMENTARY_PAIR_8_9,
-    PWM_COMPLEMENTARY_PAIR_10_11,
-    PWM_COMPLEMENTARY_PAIR_MAX
-} PWM_ComplementaryPair;
+/**
+ * @brief  PWM周期定义
+ */
+#define PWM_CYCLE_MAX    256        // PWM周期最大值
 
-void PWM_ComplementaryInit(PWM_ComplementaryPair pair, uint32_t freqHz, float dutyPercent);
-void PWM_ComplementarySetFrequency(uint32_t freqHz);
-void PWM_ComplementarySetDuty(PWM_ComplementaryPair pair, float dutyPercent);
-void PWM_ComplementaryEnable(PWM_ComplementaryPair pair, bool enable);
-uint32_t PWM_ComplementaryGetActualFrequency(void);
-float PWM_ComplementaryGetDuty(PWM_ComplementaryPair pair);
+/**
+ * @brief  初始化互补PWM控制
+ *         使用PWM4和PWM5作为两个独立可调的PWM输出
+ *         
+ * @return  None
+ */
+void PWM_ComplementaryInit(void);
+
+/**
+ * @brief  设置总占空比
+ *         两个PWM的占空比之和等于总占空比
+ *         
+ * @param  duty - 总占空比，范围0-100 (%)
+ * 
+ * @return  None
+ */
+void PWM_SetTotalDuty(uint8_t duty);
+
+/**
+ * @brief  设置平衡度
+ *         控制两个PWM之间的分配关系
+ *         balance = 0: 完全平衡，duty1 = duty2 = total_duty/2
+ *         balance > 0: PWM1增大，PWM2减小
+ *         balance < 0: PWM1减小，PWM2增大
+ *         
+ * @param  balance - 平衡度，范围-100到+100
+ *                   +100: PWM1=total_duty, PWM2=0
+ *                   -100: PWM1=0, PWM2=total_duty
+ * 
+ * @return  None
+ */
+void PWM_SetBalance(int8_t balance);
+
+/**
+ * @brief  同时设置总占空比和平衡度
+ *         
+ * @param  total_duty - 总占空比，范围0-100 (%)
+ * @param  balance    - 平衡度，范围-100到+100
+ * 
+ * @return  None
+ */
+void PWM_SetDutyAndBalance(uint8_t total_duty, int8_t balance);
+
+/**
+ * @brief  获取当前PWM1和PWM2的实际占空比
+ *         
+ * @param  duty1 - 输出PWM1的占空比 (0-100%)
+ * @param  duty2 - 输出PWM2的占空比 (0-100%)
+ * 
+ * @return  None
+ */
+void PWM_GetActualDuty(uint8_t *duty1, uint8_t *duty2);
+
+/**
+ * @brief  PWM测试函数
+ *         测试不同总占空比和平衡度组合下的PWM输出
+ *         通过串口输出测试结果
+ *         
+ * @return  None
+ */
 void PWM_Test(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // __PWM_H__

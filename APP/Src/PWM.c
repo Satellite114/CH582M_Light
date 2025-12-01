@@ -1,281 +1,372 @@
-#include <stddef.h>
-#include <stdint.h>
+/********************************** (C) COPYRIGHT *******************************
+ * File Name          : PWM.c
+ * Author             : 
+ * Version            : V1.0
+ * Date               : 2025/12/01
+ * Description        : 互补PWM控制模块实现
+ *                      实现两个独立PWM的占空比控制，总占空比可调，
+ *                      两个PWM之间的分配比例可调
+ *******************************************************************************/
+
 #include "PWM.h"
-#include "CH58x_gpio.h"
+#include "CH58x_common.h"
+#include <stdio.h>
 
-typedef struct
+#define PWM_SOFT_STEPS 10   // 软件PWM步数，用于提高输出频率
+
+/*********************************************************************
+ * GLOBAL VARIABLES
+ */
+
+// 当前总占空比 (0-100)
+static uint8_t g_total_duty = 0;
+
+// 当前平衡度 (-100 到 +100)
+static int8_t g_balance = 0;
+
+// PWM1和PWM2的实际占空比 (0-100)
+static uint8_t g_duty1 = 0;
+static uint8_t g_duty2 = 0;
+
+// PWM周期计数器 (0-99)，100步分辨率
+static volatile uint8_t g_pwm_counter = 0;
+
+// PWM通道切换点
+static uint8_t g_pwm1_end = 0;   // PWM1结束点
+static uint8_t g_pwm2_end = 0;   // PWM2结束点
+
+// TMR0是否已经启动的标志
+static uint8_t g_pwm_started = 0;
+
+/*********************************************************************
+ * LOCAL FUNCTIONS
+ */
+
+/*********************************************************************
+ * @fn      PWM_UpdateOutput
+ *
+ * @brief   根据总占空比和平衡度计算并更新PWM参数
+ *          计算公式：
+ *          duty1 = total_duty * (1 + balance/100) / 2
+ *          duty2 = total_duty * (1 - balance/100) / 2
+ *          
+ *          互补输出：PWM1在0-duty1时间高电平
+ *                   PWM2在duty1到duty1+duty2时间高电平
+ *
+ * @return  None
+ */
+static void PWM_UpdateOutput(void)
 {
-    PWM_ComplementaryPair id;
-    uint8_t channelA;
-    uint8_t channelB;
-    uint8_t staggerMask;
-} PWM_ChannelPairDesc;
-
-typedef struct
-{
-    PWMX_CycleTypeDef cfg;
-    uint16_t length;
-} PWM_CycleOption;
-
-static const PWM_ChannelPairDesc kPairDesc[PWM_COMPLEMENTARY_PAIR_MAX] = {
-    {PWM_COMPLEMENTARY_PAIR_4_5, CH_PWM4, CH_PWM5, RB_PWM4_5_STAG_EN},
-    {PWM_COMPLEMENTARY_PAIR_6_7, CH_PWM6, CH_PWM7, RB_PWM6_7_STAG_EN},
-    {PWM_COMPLEMENTARY_PAIR_8_9, CH_PWM8, CH_PWM9, RB_PWM8_9_STAG_EN},
-    {PWM_COMPLEMENTARY_PAIR_10_11, CH_PWM10, CH_PWM11, RB_PWM10_11_STAG_EN},
-};
-
-static const PWM_CycleOption kCycleOptions[] = {
-    {PWMX_Cycle_256, 256},
-    {PWMX_Cycle_255, 255},
-    {PWMX_Cycle_128, 128},
-    {PWMX_Cycle_127, 127},
-    {PWMX_Cycle_64, 64},
-    {PWMX_Cycle_63, 63},
-    {PWMX_Cycle_32, 32},
-    {PWMX_Cycle_31, 31},
-};
-
-static uint8_t s_clockDiv = 4;
-static PWMX_CycleTypeDef s_cycleCfg = PWMX_Cycle_64;
-static uint16_t s_cycleLen = 64;
-static uint32_t s_actualFreqHz = 0;
-static float s_pairDutyPercent[PWM_COMPLEMENTARY_PAIR_MAX] = {0};
-static bool s_pairInitialized[PWM_COMPLEMENTARY_PAIR_MAX] = {false};
-static bool s_pairEnabled[PWM_COMPLEMENTARY_PAIR_MAX] = {false};
-static bool s_frequencyConfigured = false;
-
-static const PWM_ChannelPairDesc *PWM_GetPairDesc(PWM_ComplementaryPair pair)
-{
-    if(pair >= PWM_COMPLEMENTARY_PAIR_MAX)
+    int16_t temp_duty1, temp_duty2;
+    
+    // 限制总占空比范围 0-100
+    if(g_total_duty > 100)
     {
-        return NULL;
+        g_total_duty = 100;
     }
-    return &kPairDesc[pair];
+    
+    // 限制平衡度范围 -100到+100
+    if(g_balance > 100)
+    {
+        g_balance = 100;
+    }
+    else if(g_balance < -100)
+    {
+        g_balance = -100;
+    }
+    
+    // 计算两个PWM的占空比
+    // duty1 = total_duty * (100 + balance) / 200
+    // duty2 = total_duty * (100 - balance) / 200
+    temp_duty1 = ((int16_t)g_total_duty * (100 + g_balance)) / 200;
+    temp_duty2 = ((int16_t)g_total_duty * (100 - g_balance)) / 200;
+    
+    // 限制范围
+    if(temp_duty1 < 0) temp_duty1 = 0;
+    if(temp_duty1 > 100) temp_duty1 = 100;
+    if(temp_duty2 < 0) temp_duty2 = 0;
+    if(temp_duty2 > 100) temp_duty2 = 100;
+    
+    g_duty1 = (uint8_t)temp_duty1;
+    g_duty2 = (uint8_t)temp_duty2;
+    
+    // 将占空比百分比映射到 0~PWM_SOFT_STEPS 的步数
+    g_pwm1_end = (g_duty1 * PWM_SOFT_STEPS) / 100;                 // PWM1从0到g_pwm1_end
+    g_pwm2_end = ((g_duty1 + g_duty2) * PWM_SOFT_STEPS) / 100;     // PWM2从g_pwm1_end到g_pwm2_end
+    
+    if(g_pwm1_end > PWM_SOFT_STEPS) g_pwm1_end = PWM_SOFT_STEPS;
+    if(g_pwm2_end > PWM_SOFT_STEPS) g_pwm2_end = PWM_SOFT_STEPS;
 }
 
-static void PWM_WriteDataRegister(uint8_t channelMask, uint8_t ticks)
+/*********************************************************************
+ * @fn      PWM_TimerStart
+ *
+ * @brief   启动用于软件PWM的TMR0，只调用一次
+ *
+ * @return  None
+ */
+static void PWM_TimerStart(void)
 {
-    volatile uint8_t *dataBase = &R8_PWM4_DATA;
-    for(uint8_t bit = 0; bit < 8; bit++)
+    // 使用官方风格初始化 TMR0：高速定时器，用于驱动软件PWM
+    // 目标：约 80kHz PWM，总步进数=PWM_SOFT_STEPS=10
+    // TMR0 中断频率 f_int = 80kHz * 10 = 800kHz
+    // 计数周期 t = FREQ_SYS / f_int = 60MHz / 800kHz ≈ 75
+    TMR0_TimerInit(75);                     // 设置TMR0周期为75个时钟
+    TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);  // 使能周期结束中断
+    PFIC_EnableIRQ(TMR0_IRQn);              // 使能TMR0中断通道
+
+    PRINT("[PWM] TMR0 started via TimerInit\r\n");
+}
+
+/*********************************************************************
+ * PUBLIC FUNCTIONS
+ */
+
+/*********************************************************************
+ * @fn      PWM_ComplementaryInit
+ *
+ * @brief   初始化互补PWM控制
+ *          使用PWM4和PWM5作为两个独立可调的PWM输出
+ *
+ * @return  None
+ */
+void PWM_ComplementaryInit(void)
+{
+    PRINT("[PWM] Init start\r\n");
+
+    // 配置 PA12 / PA13 为推挽输出，用作两路PWM输出
+    GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13, GPIO_ModeOut_PP_5mA);
+    GPIOA_ResetBits(GPIO_Pin_12 | GPIO_Pin_13);
+
+    // 初始化内部状态变量
+    g_total_duty  = 0;
+    g_balance     = 0;
+    g_duty1       = 0;
+    g_duty2       = 0;
+    g_pwm_counter = 0;
+    g_pwm1_end    = 0;
+    g_pwm2_end    = 0;
+    g_pwm_started = 0;
+
+    PRINT("[PWM] Vars initialized\r\n");
+}
+
+
+/*********************************************************************
+ * @fn      PWM_SetTotalDuty
+ *
+ * @brief   设置总占空比
+ *          两个PWM的占空比之和等于总占空比
+ *
+ * @param   duty - 总占空比，范围0-100 (%)
+ *
+ * @return  None
+ */
+void PWM_SetTotalDuty(uint8_t duty)
+{
+    g_total_duty = duty;
+    PWM_UpdateOutput();
+}
+
+/*********************************************************************
+ * @fn      PWM_SetBalance
+ *
+ * @brief   设置平衡度
+ *          控制两个PWM之间的分配关系
+ *
+ * @param   balance - 平衡度，范围-100到+100
+ *                    0: 完全平衡
+ *                    +100: PWM1=total_duty, PWM2=0
+ *                    -100: PWM1=0, PWM2=total_duty
+ *
+ * @return  None
+ */
+void PWM_SetBalance(int8_t balance)
+{
+    g_balance = balance;
+    PWM_UpdateOutput();
+}
+
+/*********************************************************************
+ * @fn      PWM_SetDutyAndBalance
+ *
+ * @brief   同时设置总占空比和平衡度
+ *
+ * @param   total_duty - 总占空比，范围0-100 (%)
+ * @param   balance    - 平衡度，范围-100到+100
+ *
+ * @return  None
+ */
+void PWM_SetDutyAndBalance(uint8_t total_duty, int8_t balance)
+{
+    g_total_duty = total_duty;
+    g_balance = balance;
+    PWM_UpdateOutput();
+
+    // 在第一次设置到非零占空比时启动TMR0和中断
+    if(!g_pwm_started && (g_pwm1_end > 0 || g_pwm2_end > 0))
     {
-        if(channelMask & (1u << bit))
-        {
-            dataBase[bit] = ticks;
-        }
+        PWM_TimerStart();
+        g_pwm_started = 1;
+    }
+
+    PRINT("[PWM] Set: Total=%d%%, Balance=%d, PWM1_end=%d, PWM2_end=%d\r\n", 
+          g_total_duty, g_balance, g_pwm1_end, g_pwm2_end);
+}
+
+/*********************************************************************
+ * @fn      PWM_GetActualDuty
+ *
+ * @brief   获取当前PWM1和PWM2的实际占空比
+ *
+ * @param   duty1 - 输出PWM1的占空比 (0-100%)
+ * @param   duty2 - 输出PWM2的占空比 (0-100%)
+ *
+ * @return  None
+ */
+void PWM_GetActualDuty(uint8_t *duty1, uint8_t *duty2)
+{
+    if(duty1 != NULL)
+    {
+        *duty1 = g_duty1;
+    }
+    if(duty2 != NULL)
+    {
+        *duty2 = g_duty2;
     }
 }
 
-static uint8_t PWM_DutyPercentToTicks(float dutyPercent)
-{
-    float clamped = dutyPercent;
-    if(clamped < 0.0f)
-    {
-        clamped = 0.0f;
-    }
-    if(clamped > 100.0f)
-    {
-        clamped = 100.0f;
-    }
-
-    uint16_t maxCount = (s_cycleLen == 256) ? 255 : s_cycleLen;
-    uint16_t ticks = (uint16_t)((clamped * (float)maxCount / 100.0f) + 0.5f);
-    if(ticks > maxCount)
-    {
-        ticks = maxCount;
-    }
-    return (uint8_t)ticks;
-}
-
-static void PWM_ReapplyPair(const PWM_ChannelPairDesc *desc, PWM_ComplementaryPair pair)
-{
-    uint8_t ticks = PWM_DutyPercentToTicks(s_pairDutyPercent[pair]);
-    if(s_pairEnabled[pair])
-    {
-        PWMX_ACTOUT(desc->channelA, ticks, Low_Level, ENABLE);
-        PWMX_ACTOUT(desc->channelB, ticks, High_Level, ENABLE);
-    }
-    else
-    {
-        PWM_WriteDataRegister(desc->channelA, ticks);
-        PWM_WriteDataRegister(desc->channelB, ticks);
-    }
-}
-
-void PWM_ComplementarySetFrequency(uint32_t freqHz)
-{
-    if(freqHz == 0)
-    {
-        freqHz = 1;
-    }
-
-    uint32_t sysClk = GetSysClock();
-    uint32_t bestError = UINT32_MAX;
-    uint8_t bestDiv = s_clockDiv;
-    PWMX_CycleTypeDef bestCycle = s_cycleCfg;
-    uint16_t bestLen = s_cycleLen;
-
-    for(size_t i = 0; i < sizeof(kCycleOptions) / sizeof(kCycleOptions[0]); i++)
-    {
-        const PWM_CycleOption *opt = &kCycleOptions[i];
-        uint64_t denominator = (uint64_t)freqHz * opt->length;
-        if(denominator == 0)
-        {
-            continue;
-        }
-
-        uint64_t div = ((uint64_t)sysClk + (denominator / 2)) / denominator;
-        if(div == 0)
-        {
-            div = 1;
-        }
-        if(div > 255)
-        {
-            div = 255;
-        }
-
-        uint32_t actualFreq = sysClk / (uint32_t)(div * opt->length);
-        uint32_t error = (actualFreq > freqHz) ? (actualFreq - freqHz) : (freqHz - actualFreq);
-
-        if(error < bestError)
-        {
-            bestError = error;
-            bestDiv = (uint8_t)div;
-            bestCycle = opt->cfg;
-            bestLen = opt->length;
-
-            if(error == 0)
-            {
-                break;
-            }
-        }
-    }
-
-    s_clockDiv = bestDiv;
-    s_cycleCfg = bestCycle;
-    s_cycleLen = bestLen;
-    s_actualFreqHz = sysClk / (bestDiv * bestLen);
-    s_frequencyConfigured = true;
-
-    PWMX_CLKCfg(s_clockDiv);
-    PWMX_CycleCfg(s_cycleCfg);
-
-    for(PWM_ComplementaryPair pair = 0; pair < PWM_COMPLEMENTARY_PAIR_MAX; pair++)
-    {
-        if(s_pairInitialized[pair])
-        {
-            const PWM_ChannelPairDesc *desc = PWM_GetPairDesc(pair);
-            if(desc != NULL)
-            {
-                PWM_ReapplyPair(desc, pair);
-            }
-        }
-    }
-}
-
-void PWM_ComplementarySetDuty(PWM_ComplementaryPair pair, float dutyPercent)
-{
-    const PWM_ChannelPairDesc *desc = PWM_GetPairDesc(pair);
-    if(desc == NULL)
-    {
-        return;
-    }
-
-    if(!s_frequencyConfigured)
-    {
-        PWM_ComplementarySetFrequency(s_actualFreqHz ? s_actualFreqHz : 10000);
-    }
-
-    s_pairDutyPercent[pair] = dutyPercent;
-    uint8_t ticks = PWM_DutyPercentToTicks(dutyPercent);
-
-    if(s_pairEnabled[pair])
-    {
-        PWMX_ACTOUT(desc->channelA, ticks, Low_Level, ENABLE);
-        PWMX_ACTOUT(desc->channelB, ticks, High_Level, ENABLE);
-    }
-    else
-    {
-        PWM_WriteDataRegister(desc->channelA, ticks);
-        PWM_WriteDataRegister(desc->channelB, ticks);
-    }
-}
-
-void PWM_ComplementaryEnable(PWM_ComplementaryPair pair, bool enable)
-{
-    const PWM_ChannelPairDesc *desc = PWM_GetPairDesc(pair);
-    if(desc == NULL || !s_pairInitialized[pair])
-    {
-        return;
-    }
-
-    uint8_t ticks = PWM_DutyPercentToTicks(s_pairDutyPercent[pair]);
-
-    if(enable)
-    {
-        PWMX_ACTOUT(desc->channelA, ticks, Low_Level, ENABLE);
-        PWMX_ACTOUT(desc->channelB, ticks, High_Level, ENABLE);
-        s_pairEnabled[pair] = true;
-    }
-    else
-    {
-        PWMX_ACTOUT(desc->channelA, 0, Low_Level, DISABLE);
-        PWMX_ACTOUT(desc->channelB, 0, High_Level, DISABLE);
-        s_pairEnabled[pair] = false;
-    }
-}
-
-void PWM_ComplementaryInit(PWM_ComplementaryPair pair, uint32_t freqHz, float dutyPercent)
-{
-    const PWM_ChannelPairDesc *desc = PWM_GetPairDesc(pair);
-    if(desc == NULL)
-    {
-        return;
-    }
-
-    if(!s_frequencyConfigured)
-    {
-        s_actualFreqHz = freqHz;
-    }
-
-    PWMX_AlterOutCfg(desc->staggerMask, DISABLE);
-    PWM_ComplementarySetFrequency(freqHz);
-    s_pairInitialized[pair] = true;
-    s_pairEnabled[pair] = false;
-    PWM_ComplementarySetDuty(pair, dutyPercent);
-}
-
-uint32_t PWM_ComplementaryGetActualFrequency(void)
-{
-    return s_actualFreqHz;
-}
-
-float PWM_ComplementaryGetDuty(PWM_ComplementaryPair pair)
-{
-    if(pair >= PWM_COMPLEMENTARY_PAIR_MAX)
-    {
-        return 0.0f;
-    }
-    return s_pairDutyPercent[pair];
-}
-
+/*********************************************************************
+ * @fn      PWM_Test
+ *
+ * @brief   PWM测试函数
+ *          测试不同总占空比和平衡度组合下的PWM输出
+ *          通过串口输出测试结果
+ *
+ * @return  None
+ */
 void PWM_Test(void)
 {
-    GPIOB_ModeCfg(GPIO_Pin_6, GPIO_ModeOut_PP_5mA);
-    GPIOB_ModeCfg(GPIO_Pin_7, GPIO_ModeOut_PP_5mA);
-
-    PWM_ComplementaryInit(PWM_COMPLEMENTARY_PAIR_8_9, 80000, 40.0f);
-    PWM_ComplementaryEnable(PWM_COMPLEMENTARY_PAIR_8_9, true);
-
-    for(uint8_t i = 0; i < 6; i++)
+    uint8_t duty1, duty2;
+    int8_t balance;
+    uint8_t total_duty;
+    
+    PRINT("\r\n========== PWM Complementary Control Test ==========\r\n");
+    
+    // 测试1: 固定总占空比50%，调整balance从-100到+100
+    PRINT("\r\n[Test 1] Total Duty = 50%%, Balance varies\r\n");
+    PRINT("Balance\tPWM1%%\tPWM2%%\tSum%%\r\n");
+    PRINT("-------\t-----\t-----\t----\r\n");
+    
+    total_duty = 50;
+    for(balance = -100; balance <= 100; balance += 25)
     {
-        float duty = 20.0f + (i * 10.0f);
-        if(duty > 80.0f)
-        {
-            duty = 80.0f;
-        }
-        PWM_ComplementarySetDuty(PWM_COMPLEMENTARY_PAIR_8_9, duty);
-        mDelaymS(200);
+        PWM_SetDutyAndBalance(total_duty, balance);
+        PWM_GetActualDuty(&duty1, &duty2);
+        PRINT("%d\t%d\t%d\t%d\r\n", balance, duty1, duty2, duty1 + duty2);
+        
+        // 延时，方便观察波形
+        DelayMs(1000);
     }
+    
+    // 测试2: 固定balance=0，调整总占空比从0到100%
+    PRINT("\r\n[Test 2] Balance = 0 (balanced), Total Duty varies\r\n");
+    PRINT("Total%%\tPWM1%%\tPWM2%%\tSum%%\r\n");
+    PRINT("------\t-----\t-----\t----\r\n");
+    
+    balance = 0;
+    for(total_duty = 0; total_duty <= 100; total_duty += 20)
+    {
+        PWM_SetDutyAndBalance(total_duty, balance);
+        PWM_GetActualDuty(&duty1, &duty2);
+        PRINT("%d\t%d\t%d\t%d\r\n", total_duty, duty1, duty2, duty1 + duty2);
+        
+        // 延时，方便观察波形
+        DelayMs(1000);
+    }
+    
+    // 测试3: 不同总占空比和balance的组合
+    PRINT("\r\n[Test 3] Various combinations\r\n");
+    PRINT("Total%%\tBalance\tPWM1%%\tPWM2%%\tSum%%\r\n");
+    PRINT("------\t-------\t-----\t-----\t----\r\n");
+    
+    // 组合1: 30% duty, +50 balance
+    PWM_SetDutyAndBalance(30, 50);
+    PWM_GetActualDuty(&duty1, &duty2);
+    PRINT("%d\t%d\t%d\t%d\t%d\r\n", 30, 50, duty1, duty2, duty1 + duty2);
+    DelayMs(100);
+    
+    // 组合2: 80% duty, -40 balance
+    PWM_SetDutyAndBalance(80, -40);
+    PWM_GetActualDuty(&duty1, &duty2);
+    PRINT("%d\t%d\t%d\t%d\t%d\r\n", 80, -40, duty1, duty2, duty1 + duty2);
+    DelayMs(100);
+    
+    // 组合3: 100% duty, +100 balance (全部给PWM1)
+    PWM_SetDutyAndBalance(100, 100);
+    PWM_GetActualDuty(&duty1, &duty2);
+    PRINT("%d\t%d\t%d\t%d\t%d\r\n", 100, 100, duty1, duty2, duty1 + duty2);
+    DelayMs(100);
+    
+    // 组合4: 100% duty, -100 balance (全部给PWM2)
+    PWM_SetDutyAndBalance(100, -100);
+    PWM_GetActualDuty(&duty1, &duty2);
+    PRINT("%d\t%d\t%d\t%d\t%d\r\n", 100, -100, duty1, duty2, duty1 + duty2);
+    DelayMs(100);
+    
+    // 测试完成，恢复到默认状态
+    PWM_SetDutyAndBalance(50, 0);
+    PWM_GetActualDuty(&duty1, &duty2);
+    
+    PRINT("\r\n[Test Complete] Reset to: Total=50%%, Balance=0\r\n");
+    PRINT("Final state: PWM1=%d%%, PWM2=%d%%\r\n", duty1, duty2);
+    PRINT("====================================================\r\n\r\n");
+}
 
-    PWM_ComplementarySetDuty(PWM_COMPLEMENTARY_PAIR_8_9, 50.0f);
+/*********************************************************************
+ * @fn      TMR0_IRQHandler
+ *
+ * @brief   TMR0中断服务函数
+ *          用于生成互补PWM波形
+ *          工作原理：
+ *          - 计数器从0-99循环
+ *          - PWM1在0到g_pwm1_end期间输出高电平
+ *          - PWM2在g_pwm1_end到g_pwm2_end期间输出高电平
+ *          - 其余时间都输出低电平
+ *
+ * @return  None
+ */
+__INTERRUPT
+__HIGH_CODE
+void TMR0_IRQHandler(void)
+{
+    // 清除中断标志
+    TMR0_ClearITFlag(TMR0_3_IT_CYC_END);
+    
+    // 控制PWM1输出（PA12）- 在0到g_pwm1_end期间为高
+    if(g_pwm_counter < g_pwm1_end)
+    {
+        GPIOA_SetBits(GPIO_Pin_12);  // PWM1高电平
+    }
+    else
+    {
+        GPIOA_ResetBits(GPIO_Pin_12);  // PWM1低电平
+    }
+    
+    // 控制PWM2输出（PA13）- 在g_pwm1_end到g_pwm2_end期间为高
+    if(g_pwm_counter >= g_pwm1_end && g_pwm_counter < g_pwm2_end)
+    {
+        GPIOA_SetBits(GPIO_Pin_13);  // PWM2高电平
+    }
+    else
+    {
+        GPIOA_ResetBits(GPIO_Pin_13);  // PWM2低电平
+    }
+    
+    // 更新PWM计数器（循环）
+    g_pwm_counter++;
+    if(g_pwm_counter >= PWM_SOFT_STEPS)
+    {
+        g_pwm_counter = 0;
+    }
 }

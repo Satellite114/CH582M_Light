@@ -6,90 +6,15 @@ packDir: null
 srcDirs:
   - APP
   - Profile
+  - HAL
+  - LIB
+  - RVMSIS
+  - Startup
+  - StdPeriphDriver
 virtualFolder:
   name: <virtual_root>
   files: []
-  folders:
-    - name: HAL
-      files:
-        - path: ../HAL/SLEEP.c
-        - path: ../HAL/RTC.c
-        - path: ../HAL/MCU.c
-        - path: ../HAL/LED.c
-        - path: ../HAL/KEY.c
-      folders:
-        - name: include
-          files:
-            - path: ../HAL/include/SLEEP.h
-            - path: ../HAL/include/RTC.h
-            - path: ../HAL/include/LED.h
-            - path: ../HAL/include/KEY.h
-            - path: ../HAL/include/HAL.h
-            - path: ../HAL/include/config.h
-          folders: []
-    - name: LIB
-      files:
-        - path: ../LIB/CH58xBLE_ROM.h
-        - path: ../LIB/CH58xBLE_LIB.h
-      folders: []
-    - name: Ld
-      files: []
-      folders: []
-    - name: RVMSIS
-      files:
-        - path: ../../SRC/RVMSIS/core_riscv.h
-        - path: ../../SRC/RVMSIS/core_riscv.c
-      folders: []
-    - name: Startup
-      files:
-        - path: ../../SRC/Startup/startup_CH583.S
-      folders: []
-    - name: StdPeriphDriver
-      files:
-        - path: ../../SRC/StdPeriphDriver/CH58x_usbhostClass.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_usbhostBase.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_usbdev.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_usb2hostClass.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_usb2hostBase.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_usb2dev.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_uart3.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_uart2.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_uart1.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_uart0.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_timer3.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_timer2.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_timer1.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_timer0.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_sys.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_spi1.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_spi0.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_pwr.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_pwm.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_i2c.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_gpio.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_flash.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_clk.c
-        - path: ../../SRC/StdPeriphDriver/CH58x_adc.c
-      folders:
-        - name: inc
-          files:
-            - path: ../../SRC/StdPeriphDriver/inc/ISP583.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_usbhost.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_usbdev.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_uart.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_timer.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_sys.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_spi.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_pwr.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_pwm.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_i2c.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_gpio.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_flash.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_common.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_clk.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH58x_adc.h
-            - path: ../../SRC/StdPeriphDriver/inc/CH583SFR.h
-          folders: []
+  folders: []
 dependenceList: []
 outDir: build
 miscInfo:
