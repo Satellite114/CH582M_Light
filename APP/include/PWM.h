@@ -94,6 +94,9 @@ void PWM_GetActualDuty(uint8_t *duty1, uint8_t *duty2);
  */
 void PWM_Test(void);
 
+// 使用PWMX模块在 PB6 (PWM8) 上输出约80kHz、50%占空比PWM的最小测试函数
+void PB6_PWMX_80kHz_50Duty_Start(void);
+
 #ifdef __cplusplus
 }
 #endif

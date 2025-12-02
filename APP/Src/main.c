@@ -62,36 +62,43 @@ int main(void)
 //     GPIOB_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_PU);
 // #endif
 #ifdef DEBUG
-    GPIOA_SetBits(bTXD1);
-    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
+    // 将UART1从PA8/PA9重映射到PB12/PB13，避免与PA9上的TMR0 PWM冲突
+    GPIOPinRemap(ENABLE, RB_PIN_UART1);
+
+    // 配置PB13为UART1 TXD1_输出，PB12为UART1 RXD1_输入
+    GPIOB_SetBits(bTXD1_);
+    GPIOB_ModeCfg(bTXD1_, GPIO_ModeOut_PP_5mA);
+    GPIOB_ModeCfg(bRXD1_, GPIO_ModeIN_PU);
+
     UART1_DefInit();
-    DelayMs(10);  // 等待串口稳定
+    DelayMs(10); // 等待串口稳定
 #endif
-    
+
+    //PB6_PWMX_80kHz_50Duty_Start();
+
     PRINT("\r\n=== CH582M PWM Test Start ===\r\n");
     PRINT("System Clock: %d Hz\r\n", GetSysClock());
     PRINT("Calling PWM_ComplementaryInit()...\r\n");
-    
+
     // 初始化PWM
     PWM_ComplementaryInit();
-    
+
     PRINT("PWM_ComplementaryInit() returned\r\n");
-    
+
     // 设置总占空比50%，balance=0（完全平衡）
     PRINT("Setting PWM: Total=50%%, Balance=0\r\n");
     PWM_SetDutyAndBalance(50, 0);  // PWM1=25%, PWM2=25%
-    
-    // 延时一下，让PWM稳定输出
-    DelayMs(500);
-    
-    // 运行完整测试
-    // PWM_Test();
-    
-    PRINT("\r\n=== Test Complete, entering main loop ===\r\n");
-    
+
+    // // 延时一下，让PWM稳定输出
+    // DelayMs(500);
+
+    // // 运行完整测试
+    //  PWM_Test();
+
+    // PRINT("\r\n=== Test Complete, entering main loop ===\r\n");
+
     // 主循环，保持PWM运行
-    while(1)
-    {
+    while (1) {
         DelayMs(1000);
     }
 

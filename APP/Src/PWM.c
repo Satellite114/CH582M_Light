@@ -12,8 +12,6 @@
 #include "CH58x_common.h"
 #include <stdio.h>
 
-#define PWM_SOFT_STEPS 10   // 软件PWM步数，用于提高输出频率
-
 /*********************************************************************
  * GLOBAL VARIABLES
  */
@@ -25,18 +23,16 @@ static uint8_t g_total_duty = 0;
 static int8_t g_balance = 0;
 
 // PWM1和PWM2的实际占空比 (0-100)
-static uint8_t g_duty1 = 0;
-static uint8_t g_duty2 = 0;
+static uint8_t g_duty1 = 0;   // A 通道占空比 (%), 对应 PA9 / TMR0 PWM0
+static uint8_t g_duty2 = 0;   // B 通道占空比 (%), 对应 PB6 / PWMX PWM8
 
-// PWM周期计数器 (0-99)，100步分辨率
-static volatile uint8_t g_pwm_counter = 0;
+// 记录最近一次计算得到的定时器周期和高电平宽度（tick）
+static uint32_t g_period_ticks = 0;   // 一个PWM周期对应的定时器计数（与PWMX保持一致）
+static uint32_t g_ta_ticks     = 0;   // A 高电平宽度（tick）
+static uint32_t g_tb_ticks     = 0;   // B 高电平宽度（tick）
 
-// PWM通道切换点
-static uint8_t g_pwm1_end = 0;   // PWM1结束点
-static uint8_t g_pwm2_end = 0;   // PWM2结束点
-
-// TMR0是否已经启动的标志
-static uint8_t g_pwm_started = 0;
+// 待在TMR1中断中开启的PWM8有效数据宽度（0-255），0表示当前无需开启B通道
+static volatile uint8_t g_pwm8_width_pending = 0;
 
 /*********************************************************************
  * LOCAL FUNCTIONS
@@ -45,26 +41,23 @@ static uint8_t g_pwm_started = 0;
 /*********************************************************************
  * @fn      PWM_UpdateOutput
  *
- * @brief   根据总占空比和平衡度计算并更新PWM参数
+ * @brief   根据总占空比和平衡度计算并更新PWM参数（占空比百分比）
  *          计算公式：
  *          duty1 = total_duty * (1 + balance/100) / 2
  *          duty2 = total_duty * (1 - balance/100) / 2
- *          
- *          互补输出：PWM1在0-duty1时间高电平
- *                   PWM2在duty1到duty1+duty2时间高电平
  *
  * @return  None
  */
 static void PWM_UpdateOutput(void)
 {
     int16_t temp_duty1, temp_duty2;
-    
+
     // 限制总占空比范围 0-100
     if(g_total_duty > 100)
     {
         g_total_duty = 100;
     }
-    
+
     // 限制平衡度范围 -100到+100
     if(g_balance > 100)
     {
@@ -74,81 +67,229 @@ static void PWM_UpdateOutput(void)
     {
         g_balance = -100;
     }
-    
-    // 计算两个PWM的占空比
+
+    // 计算两个PWM的占空比（百分比）
     // duty1 = total_duty * (100 + balance) / 200
     // duty2 = total_duty * (100 - balance) / 200
     temp_duty1 = ((int16_t)g_total_duty * (100 + g_balance)) / 200;
     temp_duty2 = ((int16_t)g_total_duty * (100 - g_balance)) / 200;
-    
+
     // 限制范围
     if(temp_duty1 < 0) temp_duty1 = 0;
     if(temp_duty1 > 100) temp_duty1 = 100;
     if(temp_duty2 < 0) temp_duty2 = 0;
     if(temp_duty2 > 100) temp_duty2 = 100;
-    
+
     g_duty1 = (uint8_t)temp_duty1;
     g_duty2 = (uint8_t)temp_duty2;
-    
-    // 将占空比百分比映射到 0~PWM_SOFT_STEPS 的步数
-    g_pwm1_end = (g_duty1 * PWM_SOFT_STEPS) / 100;                 // PWM1从0到g_pwm1_end
-    g_pwm2_end = ((g_duty1 + g_duty2) * PWM_SOFT_STEPS) / 100;     // PWM2从g_pwm1_end到g_pwm2_end
-    
-    if(g_pwm1_end > PWM_SOFT_STEPS) g_pwm1_end = PWM_SOFT_STEPS;
-    if(g_pwm2_end > PWM_SOFT_STEPS) g_pwm2_end = PWM_SOFT_STEPS;
+
+    // 计算对应的定时器tick数
+    // 为了与PWMX(PWM8, PB6)保持同频，这里选用与PWMX一致的周期：
+    // PWMX: F_pwm = FREQ_SYS / (3 * 256) ≈ 78.1kHz (当FREQ_SYS=60MHz)
+    // 因此TMR0的计数周期也设置为 3*256 个系统时钟
+    g_period_ticks = 3 * 256;
+    if(g_period_ticks == 0)
+    {
+        g_period_ticks = 1;
+    }
+
+    g_ta_ticks = (g_period_ticks * g_duty1) / 100;              // A高电平宽度
+    g_tb_ticks = (g_period_ticks * g_duty2) / 100;              // B高电平宽度
+
+    // 防止超过一个周期
+    if(g_ta_ticks > g_period_ticks) g_ta_ticks = g_period_ticks;
+    if(g_tb_ticks > g_period_ticks) g_tb_ticks = g_period_ticks;
 }
 
 /*********************************************************************
- * @fn      PWM_TimerStart
+ * @fn      PWM_StopAll
  *
- * @brief   启动用于软件PWM的TMR0，只调用一次
- *
- * @return  None
+ * @brief   停止TMR0/PWMX的PWM输出
  */
-static void PWM_TimerStart(void)
+static void PWM_StopAll(void)
 {
-    // 使用官方风格初始化 TMR0：高速定时器，用于驱动软件PWM
-    // 目标：约 80kHz PWM，总步进数=PWM_SOFT_STEPS=10
-    // TMR0 中断频率 f_int = 80kHz * 10 = 800kHz
-    // 计数周期 t = FREQ_SYS / f_int = 60MHz / 800kHz ≈ 75
-    TMR0_TimerInit(75);                     // 设置TMR0周期为75个时钟
-    TMR0_ITCfg(ENABLE, TMR0_3_IT_CYC_END);  // 使能周期结束中断
-    PFIC_EnableIRQ(TMR0_IRQn);              // 使能TMR0中断通道
+    // 关闭TMR0(PA9)输出
+    TMR0_PWMDisable();
+    TMR0_Disable();
 
-    PRINT("[PWM] TMR0 started via TimerInit\r\n");
+    // 关闭PWMX的PWM8(PB6)输出
+    PWMX_ACTOUT(CH_PWM8, 0, High_Level, DISABLE);
+
+    // 关闭TMR1一次性延时定时器，并清除待触发的PWM8宽度
+    TMR1_ITCfg(DISABLE, RB_TMR_IE_CYC_END);
+    TMR1_Disable();
+    TMR1_ClearITFlag(RB_TMR_IF_CYC_END);
+    g_pwm8_width_pending = 0;
+}
+
+/*********************************************************************
+ * @fn      PWM_StartHardware
+ *
+ * @brief   按当前计算出的 g_period_ticks / g_ta_ticks / g_tb_ticks
+ *          配置并启动 TMR0(PA9) 和 PWMX-PWM8(PB6) 的PWM输出。
+ *          先启动A( TMR0 )，再延时Ta后启动B( PWM8 )，实现同一周期内先A后B。
+ */
+static void PWM_StartHardware(void)
+{
+    uint32_t ta = g_ta_ticks;
+    uint32_t tb = g_tb_ticks;
+    uint32_t period = g_period_ticks;
+
+    // 无高电平时，直接关闭两路PWM
+    if((ta == 0) && (tb == 0))
+    {
+        PWM_StopAll();
+        return;
+    }
+
+    // 配置PA9(TMR0)为输出引脚，PB6为PWM8输出引脚
+    GPIOA_ModeCfg(bTMR0, GPIO_ModeOut_PP_5mA);
+    GPIOB_ModeCfg(GPIO_Pin_6, GPIO_ModeOut_PP_5mA);
+
+    // 先停止所有输出
+    PWM_StopAll();
+
+    PRINT("[PWM] StartHW: period=%lu, ta=%lu, tb=%lu\r\n", period, ta, tb);
+
+    // 初始化TMR0 PWM：A通道，输出在PA9
+    if(ta > 0)
+    {
+        TMR0_PWMInit(High_Level, PWM_Times_1);
+        TMR0_PWMCycleCfg(period);        // 周期
+        TMR0_PWMActDataWidth(ta);        // A高电平宽度
+    }
+
+    // 计算PWM8对应的有效数据宽度（0-256），基于占空比百分比
+    uint8_t pwm8_width = 0;
+    if(tb > 0)
+    {
+        uint32_t tmp = (256U * g_duty2) / 100U;
+        if(tmp > 255U) tmp = 255U;
+        pwm8_width = (uint8_t)tmp;
+    }
+
+    // 若仅有B通道有高电平，直接启动B通道即可
+    if((ta == 0) && (tb > 0))
+    {
+        // 配置PWMX时钟与周期（与PB6_PWMX_80kHz_50Duty_Start一致）
+        PWMX_CLKCfg(3);
+        PWMX_CycleCfg(PWMX_Cycle_256);
+
+        PWMX_ACTOUT(CH_PWM8, pwm8_width, High_Level, ENABLE);
+        return;
+    }
+
+    // 如果B没有高电平，则仅启动A通道即可
+    if(tb == 0)
+    {
+        if(ta > 0)
+        {
+            TMR0_PWMEnable();
+            TMR0_Enable();
+        }
+        return;
+    }
+
+    // 此时 A、B 都有高电平需求：
+    // 使用TMR1一次性定时，在Ta时间后通过中断开启B通道：
+    // 1) 先配置并使能TMR1周期结束中断；
+    // 2) 调用TMR1_TimerInit(ta)启动计数；
+    // 3) 紧接着启动A通道(TMR0)。
+
+    g_pwm8_width_pending = pwm8_width;
+
+    TMR1_Disable();
+    TMR1_ClearITFlag(RB_TMR_IF_CYC_END);
+    TMR1_ITCfg(ENABLE, RB_TMR_IE_CYC_END);
+    PFIC_EnableIRQ(TMR1_IRQn);
+
+    // 启动TMR1计数（以FREQ_SYS为基准计数Ta个tick）
+    TMR1_TimerInit(ta);
+
+    // 启动A通道（若有高电平需求）
+    if(ta > 0)
+    {
+        TMR0_PWMEnable();
+        TMR0_Enable();
+    }
+}
+
+// TMR1中断服务程序：在计时Ta结束后开启B通道(PWM8)输出
+__INTERRUPT __HIGH_CODE void TMR1_IRQHandler(void)
+{
+    if(TMR1_GetITFlag(RB_TMR_IF_CYC_END))
+    {
+        // 清除中断标志并停止TMR1
+        TMR1_ClearITFlag(RB_TMR_IF_CYC_END);
+        TMR1_ITCfg(DISABLE, RB_TMR_IE_CYC_END);
+        TMR1_Disable();
+
+        // 读取待触发的PWM8宽度
+        uint8_t width = g_pwm8_width_pending;
+        g_pwm8_width_pending = 0;
+
+        if(width)
+        {
+            PWMX_CLKCfg(3);
+            PWMX_CycleCfg(PWMX_Cycle_256);
+            PWMX_ACTOUT(CH_PWM8, width, High_Level, ENABLE);
+        }
+    }
+}
+
+/**
+ * @brief  使用PWMX模块在 PB6 (PWM8) 上启动约80kHz、50%占空比的PWM输出
+ */
+void PB6_PWMX_80kHz_50Duty_Start(void)
+{
+    // 目标频率约为 80kHz：F_pwm = FREQ_SYS / (d * N)
+    // 这里选择 d = 3, N = 256 -> F_pwm ≈ 60MHz / (3*256) ≈ 78.1kHz
+
+    // 确保PWMX输出在默认引脚：PA12/PA13/PB4/PB6/PB7
+    GPIOPinRemap(DISABLE, RB_PIN_PWMX);
+
+    // 配置 PB6 为 PWM8 (PWMX 通道) 输出
+    GPIOB_ModeCfg(GPIO_Pin_6, GPIO_ModeOut_PP_5mA);
+
+    // 配置PWMX时钟与周期
+    PWMX_CLKCfg(3);                 // 基准周期 = 3 / FREQ_SYS
+    PWMX_CycleCfg(PWMX_Cycle_256);  // 一个PWM周期 = 256 * (3 / FREQ_SYS)
+
+    // 配置PWM8通道输出，高电平占空比约50%
+    PWMX_ACTOUT(CH_PWM8, 256 / 2, High_Level, ENABLE);  // 128/256 ≈ 50%
 }
 
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
 
-/*********************************************************************
- * @fn      PWM_ComplementaryInit
- *
- * @brief   初始化互补PWM控制
- *          使用PWM4和PWM5作为两个独立可调的PWM输出
- *
- * @return  None
- */
 void PWM_ComplementaryInit(void)
 {
-    PRINT("[PWM] Init start\r\n");
+    PRINT("[PWM] HW PWM Init start (TMR0-PA9, PWM8-PB6)\r\n");
 
-    // 配置 PA12 / PA13 为推挽输出，用作两路PWM输出
-    GPIOA_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13, GPIO_ModeOut_PP_5mA);
-    GPIOA_ResetBits(GPIO_Pin_12 | GPIO_Pin_13);
+    // 确保TMR0保持在PA9，PWMX保持在默认引脚(PA12/PA13/PB4/PB6/PB7)
+    GPIOPinRemap(DISABLE, RB_PIN_TMR0);
+    GPIOPinRemap(DISABLE, RB_PIN_PWMX);
+
+    // 初始化TMR1作为一次性延时定时器（无引脚输出）
+    TMR1_Disable();
+    TMR1_ITCfg(DISABLE, RB_TMR_IE_CYC_END);
+    TMR1_ClearITFlag(RB_TMR_IF_CYC_END);
+    PFIC_EnableIRQ(TMR1_IRQn);
 
     // 初始化内部状态变量
-    g_total_duty  = 0;
-    g_balance     = 0;
-    g_duty1       = 0;
-    g_duty2       = 0;
-    g_pwm_counter = 0;
-    g_pwm1_end    = 0;
-    g_pwm2_end    = 0;
-    g_pwm_started = 0;
+    g_total_duty   = 0;
+    g_balance      = 0;
+    g_duty1        = 0;
+    g_duty2        = 0;
+    g_period_ticks = 0;
+    g_ta_ticks     = 0;
+    g_tb_ticks     = 0;
 
-    PRINT("[PWM] Vars initialized\r\n");
+    // 先关闭所有PWM输出
+    PWM_StopAll();
+
+    PRINT("[PWM] Vars & timers reset\r\n");
 }
 
 
@@ -203,15 +344,11 @@ void PWM_SetDutyAndBalance(uint8_t total_duty, int8_t balance)
     g_balance = balance;
     PWM_UpdateOutput();
 
-    // 在第一次设置到非零占空比时启动TMR0和中断
-    if(!g_pwm_started && (g_pwm1_end > 0 || g_pwm2_end > 0))
-    {
-        PWM_TimerStart();
-        g_pwm_started = 1;
-    }
+    // 根据新的占空比参数重新配置硬件PWM并对齐相位
+    PWM_StartHardware();
 
-    PRINT("[PWM] Set: Total=%d%%, Balance=%d, PWM1_end=%d, PWM2_end=%d\r\n", 
-          g_total_duty, g_balance, g_pwm1_end, g_pwm2_end);
+    PRINT("[PWM] Set: Total=%d%%, Balance=%d, duty1=%d%%, duty2=%d%%\r\n", 
+          g_total_duty, g_balance, g_duty1, g_duty2);
 }
 
 /*********************************************************************
@@ -323,50 +460,36 @@ void PWM_Test(void)
     PRINT("====================================================\r\n\r\n");
 }
 
-/*********************************************************************
- * @fn      TMR0_IRQHandler
- *
- * @brief   TMR0中断服务函数
- *          用于生成互补PWM波形
- *          工作原理：
- *          - 计数器从0-99循环
- *          - PWM1在0到g_pwm1_end期间输出高电平
- *          - PWM2在g_pwm1_end到g_pwm2_end期间输出高电平
- *          - 其余时间都输出低电平
- *
- * @return  None
+/**
+ * @brief  在 PB22 上启动 TMR3 PWM，80kHz，50% 占空比
  */
-__INTERRUPT
-__HIGH_CODE
-void TMR0_IRQHandler(void)
+void PB22_PWM_80kHz_50Duty_Start(void)
 {
-    // 清除中断标志
-    TMR0_ClearITFlag(TMR0_3_IT_CYC_END);
-    
-    // 控制PWM1输出（PA12）- 在0到g_pwm1_end期间为高
-    if(g_pwm_counter < g_pwm1_end)
-    {
-        GPIOA_SetBits(GPIO_Pin_12);  // PWM1高电平
-    }
-    else
-    {
-        GPIOA_ResetBits(GPIO_Pin_12);  // PWM1低电平
-    }
-    
-    // 控制PWM2输出（PA13）- 在g_pwm1_end到g_pwm2_end期间为高
-    if(g_pwm_counter >= g_pwm1_end && g_pwm_counter < g_pwm2_end)
-    {
-        GPIOA_SetBits(GPIO_Pin_13);  // PWM2高电平
-    }
-    else
-    {
-        GPIOA_ResetBits(GPIO_Pin_13);  // PWM2低电平
-    }
-    
-    // 更新PWM计数器（循环）
-    g_pwm_counter++;
-    if(g_pwm_counter >= PWM_SOFT_STEPS)
-    {
-        g_pwm_counter = 0;
-    }
+    uint32_t period;
+
+    // 目标频率 80kHz：period = FREQ_SYS / 80000
+    period = FREQ_SYS / 80000;
+    if (period == 0)
+        period = 1;
+
+    // 将 TMR3/PWM3 重映射到 PB22
+    GPIOPinRemap(ENABLE, RB_PIN_TMR3);
+
+    // 配置 PB22 为 TMR3/PWM3 输出
+    GPIOB_ModeCfg(bTMR3, GPIO_ModeOut_PP_5mA);
+
+    // 先关掉 TMR3 PWM 和计数器
+    TMR3_PWMDisable();
+    TMR3_Disable();
+
+    // 初始化 TMR3 PWM：高电平有效，连续输出
+    TMR3_PWMInit(High_Level, PWM_Times_1);
+
+    // 设置周期和占空比（50%）
+    TMR3_PWMCycleCfg(period);
+    TMR3_PWMActDataWidth(period / 2);
+
+    // 启动 TMR3 PWM 输出
+    TMR3_PWMEnable();
+    TMR3_Enable();
 }
