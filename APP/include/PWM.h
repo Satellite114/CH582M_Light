@@ -75,6 +75,9 @@ void PWM_SetBalance(int8_t balance);
  */
 void PWM_SetDutyAndBalance(uint8_t total_duty, int8_t balance);
 
+// 使用DelayUs软件延时方式，在A高电平结束后开启B通道的版本
+void PWM_SetDutyAndBalance_DelayMode(uint8_t total_duty, int8_t balance);
+
 /**
  * @brief  获取当前PWM1和PWM2的实际占空比
  *         

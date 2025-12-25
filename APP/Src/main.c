@@ -1,114 +1,80 @@
 /********************************** (C) COPYRIGHT *******************************
- * File Name          : main.c
+ * File Name          : Main.c
  * Author             : WCH
- * Version            : V1.1
+ * Version            : V1.0
  * Date               : 2020/08/06
- * Description        : 外设从机应用主函数及任务系统初始化
+ * Description        : I2C功能演示
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
  * Attention: This software (modified or not) and binary are used for
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 
-/******************************************************************************/
-/* 头文件包含 */
-#include "CONFIG.h"
-#include "HAL.h"
-#include "peripheral.h"
-#include "app_uart.h"
-#include "PWM.h"
-
-/*********************************************************************
- * GLOBAL TYPEDEFS
- */
-__attribute__((aligned(4))) u32 MEM_BUF[BLE_MEMHEAP_SIZE / 4];
-
-#if (defined(BLE_MAC)) && (BLE_MAC == TRUE)
-u8C MacAddr[6] = {0x84, 0xC2, 0xE4, 0x03, 0x02, 0x02};
-#endif
-
-/*******************************************************************************
- * Function Name  : Main_Circulation
- * Description    : 主循环
- * Input          : None
- * Output         : None
- * Return         : None
- *******************************************************************************/
-__HIGH_CODE
-__attribute__((noinline)) void Main_Circulation()
+#include "CH58x_common.h"
+#include "FUSB30X.h"
+#include "CCHandshake.h"
+void HW_I2C_Init()
 {
-    while (1) {
-        TMOS_SystemProcess();
-        app_uart_process();
-    }
+    GPIOPinRemap(DISABLE, RB_PIN_I2C);
+    GPIOB_ModeCfg(GPIO_Pin_12 | GPIO_Pin_13, GPIO_ModeIN_PU);
+    I2C_Init(I2C_Mode_I2C, 10000, I2C_DutyCycle_16_9, I2C_Ack_Enable, I2C_AckAddr_7bit, 0x22);
+    I2C_StretchClockCmd(ENABLE);
+    I2C_Cmd(ENABLE);
 }
-
-/*******************************************************************************
- * Function Name  : main
- * Description    : 主函数
- * Input          : None
- * Output         : None
- * Return         : None
- *******************************************************************************/
-int main(void)
+int main()
 {
-#if (defined(DCDC_ENABLE)) && (DCDC_ENABLE == TRUE)
-    PWR_DCDCCfg(ENABLE);
-#endif
+
     SetSysClock(CLK_SOURCE_PLL_60MHz);
-// 注释掉HAL_SLEEP的GPIO配置，避免覆盖PWM引脚
-// #if (defined(HAL_SLEEP)) && (HAL_SLEEP == TRUE)
-//     GPIOA_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_PU);
-//     GPIOB_ModeCfg(GPIO_Pin_All, GPIO_ModeIN_PU);
-// #endif
-#ifdef DEBUG
-    // 将UART1从PA8/PA9重映射到PB12/PB13，避免与PA9上的TMR0 PWM冲突
-    GPIOPinRemap(ENABLE, RB_PIN_UART1);
 
-    // 配置PB13为UART1 TXD1_输出，PB12为UART1 RXD1_输入
-    GPIOB_SetBits(bTXD1_);
-    GPIOB_ModeCfg(bTXD1_, GPIO_ModeOut_PP_5mA);
-    GPIOB_ModeCfg(bRXD1_, GPIO_ModeIN_PU);
-
+    // 初始化串口
+    GPIOA_SetBits(bTXD1);
+    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
     UART1_DefInit();
-    DelayMs(10); // 等待串口稳定
-#endif
 
-    //PB6_PWMX_80kHz_50Duty_Start();
+    HW_I2C_Init();
 
-    PRINT("\r\n=== CH582M PWM Test Start ===\r\n");
-    PRINT("System Clock: %d Hz\r\n", GetSysClock());
-    PRINT("Calling PWM_ComplementaryInit()...\r\n");
 
-    // 初始化PWM
-    PWM_ComplementaryInit();
+    // uint8_t buf = 0x01;
 
-    PRINT("PWM_ComplementaryInit() returned\r\n");
+    // volatile uint8_t id = 0;
 
-    // 设置总占空比50%，balance=0（完全平衡）
-    PRINT("Setting PWM: Total=50%%, Balance=0\r\n");
-    PWM_SetDutyAndBalance(50, 0);  // PWM1=25%, PWM2=25%
+    // while (1)
+    // {
+    //     i2c_transfer_data(0x22 << 1, 1, &buf);
+    //     i2c_recv_data(0x22 << 1, 1, &id);
+    //     printf("FUSB302 ID:0x%x\n", id);
+    //     DelayMs(1000);
+    // }
 
-    // // 延时一下，让PWM稳定输出
-    // DelayMs(500);
+    Check_USB302();
 
-    // // 运行完整测试
-    //  PWM_Test();
+    while (USB302_Init() == 0) // 如果初始化一直是0 就说明没插入啥 等
+    {
+        DelayMs(100);
+        printf("WAITTING \n");
+    }
+    printf("connected \n");
 
-    // PRINT("\r\n=== Test Complete, entering main loop ===\r\n");
+    while (1)
+    {
+        USB302_Data_Service();
+        USB302_Get_Data();
+        if (PD_STEP == 3)
+            break;
+        printf("PD_STEP=%d\n", PD_STEP);
 
-    // 主循环，保持PWM运行
-    while (1) {
-        DelayMs(1000);
+        DelayMs(100);
     }
 
-    // PRINT("%s\\n", VER_LIB);
-    // CH58X_BLEInit();
-    // HAL_Init();
-    // GAPRole_PeripheralInit();
-    // Peripheral_Init();
-    // app_uart_init();
-    // Main_Circulation();
-}
+  while (1)
+  {
+    /* USER CODE END WHILE */
 
-/******************************** endfile @ main ******************************/
+    /* USER CODE BEGIN 3 */
+    printf("PD test success \r\n");
+
+    DelayMs(1000);
+
+
+  }
+}
