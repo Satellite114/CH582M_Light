@@ -19,6 +19,7 @@ virtualFolder:
   files:
     - path: APP/Src/fusb302_test.c
     - path: fusb302-d/app_i2c.c
+    - path: APP/Src/atk_md0430_touch_iic.c
   folders: []
 dependenceList: []
 outDir: build

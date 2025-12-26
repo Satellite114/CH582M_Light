@@ -19,6 +19,7 @@
 #include "ble_uart_service.h"
 #include "app_drv_fifo.h"
 #include "app_uart.h"
+#include "PWM.h"
 
 /*********************************************************************
  * MACROS
@@ -637,6 +638,98 @@ static void peripheralStateNotificationCB(gapRole_States_t newState, gapRoleEven
         case GAPROLE_ERROR:
             PRINT("Error..\n");
             break;
+
+        default:
+            break;
+    }
+}
+
+/*********************************************************************
+ * @fn      on_bleuartServiceEvt
+ *
+ * @brief   蓝牙串口服务事件回调函数
+ *          接收蓝牙数据并控制PWM输出
+ *          数据格式：2个字节
+ *          - 第1个字节：总占空比 (0-100)
+ *          - 第2个字节：PWM4占总占空比的百分比 (0-100)
+ *
+ * @param   connection_handle - 连接句柄
+ * @param   p_evt - 事件指针
+ *
+ * @return  none
+ */
+void on_bleuartServiceEvt(uint16 connection_handle, ble_uart_evt_t *p_evt)
+{
+    switch(p_evt->type)
+    {
+        case BLE_UART_EVT_TX_NOTI_DISABLED:
+            PRINT("BLE UART TX notification disabled\n");
+            break;
+
+        case BLE_UART_EVT_TX_NOTI_ENABLED:
+            PRINT("BLE UART TX notification enabled\n");
+            tmos_start_task(Peripheral_TaskID, UART_TO_BLE_SEND_EVT, 200);
+            break;
+
+        case BLE_UART_EVT_BLE_DATA_RECIEVED:
+        {
+            PRINT("BLE Data Received: len=%d\n", p_evt->data.length);
+            
+            // 检查数据长度是否为2字节
+            if(p_evt->data.length == 2)
+            {
+                uint8_t total_duty = p_evt->data.p_data[0];  // 总占空比 (0-100)
+                uint8_t pwm4_ratio = p_evt->data.p_data[1];  // PWM4占总占空比的百分比 (0-100)
+                
+                // 限制范围
+                if(total_duty > 100) total_duty = 100;
+                if(pwm4_ratio > 100) pwm4_ratio = 100;
+                
+                // 计算PWM4和PWM5的实际占空比
+                // PWM4 = total_duty * pwm4_ratio / 100
+                // PWM5 = total_duty - PWM4
+                uint8_t pwm4_duty = (total_duty * pwm4_ratio) / 100;
+                uint8_t pwm5_duty = total_duty - pwm4_duty;
+                
+                PRINT("[BLE PWM] Total=%d%%, PWM4_ratio=%d%%\n", total_duty, pwm4_ratio);
+                PRINT("[BLE PWM] PWM4=%d%%, PWM5=%d%%\n", pwm4_duty, pwm5_duty);
+                
+                // 计算balance值
+                // balance = (PWM4 - PWM5) * 100 / total_duty
+                // 当total_duty=0时，balance=0
+                int8_t balance = 0;
+                if(total_duty > 0)
+                {
+                    // balance范围：-100到+100
+                    // PWM4=total, PWM5=0 -> balance=+100
+                    // PWM4=0, PWM5=total -> balance=-100
+                    // PWM4=PWM5 -> balance=0
+                    int16_t diff = (int16_t)pwm4_duty - (int16_t)pwm5_duty;
+                    balance = (diff * 100) / total_duty;
+                    
+                    // 限制范围
+                    if(balance > 100) balance = 100;
+                    if(balance < -100) balance = -100;
+                }
+                
+                PRINT("[BLE PWM] Calculated balance=%d\n", balance);
+                
+                // 设置PWM输出
+                PWM_SetDutyAndBalance(total_duty, balance);
+                
+                // 回显确认信息（可选）
+                // 可以通过蓝牙发送确认消息回手机端
+            }
+            else
+            {
+                PRINT("[BLE PWM] Error: Invalid data length (expected 2, got %d)\n", p_evt->data.length);
+            }
+            
+            // 将接收到的数据写入FIFO（原有功能保留）
+            uint16_t write_length = p_evt->data.length;
+            app_drv_fifo_write(&app_uart_rx_fifo, (uint8_t *)p_evt->data.p_data, &write_length);
+            break;
+        }
 
         default:
             break;

@@ -193,46 +193,4 @@ void UART3_IRQHandler(void)
 }
 
 /*********************************************************************
- * @fn      on_bleuartServiceEvt
- *
- * @brief   ble uart service callback handler
- *
- * @return  NULL
- */
-void on_bleuartServiceEvt(uint16_t connection_handle, ble_uart_evt_t *p_evt)
-{
-    switch(p_evt->type)
-    {
-        case BLE_UART_EVT_TX_NOTI_DISABLED:
-            PRINT("%02x:bleuart_EVT_TX_NOTI_DISABLED\r\n", connection_handle);
-            break;
-        case BLE_UART_EVT_TX_NOTI_ENABLED:
-            PRINT("%02x:bleuart_EVT_TX_NOTI_ENABLED\r\n", connection_handle);
-            break;
-        case BLE_UART_EVT_BLE_DATA_RECIEVED:
-            PRINT("BLE RX DATA len:%d\r\n", p_evt->data.length);
-            PRINT("Data: ");
-            for(uint16_t i = 0; i < p_evt->data.length; i++)
-            {
-                PRINT("%c", p_evt->data.p_data[i]);
-            }
-            PRINT("\r\n");
-
-            //for notify back test
-            //to ble
-            uint16_t to_write_length = p_evt->data.length;
-            app_drv_fifo_write(&app_uart_rx_fifo, (uint8_t *)p_evt->data.p_data, &to_write_length);
-            tmos_start_task(Peripheral_TaskID, UART_TO_BLE_SEND_EVT, 2);
-            //end of nofify back test
-
-            //ble to uart
-            app_uart_tx_data((uint8_t *)p_evt->data.p_data, p_evt->data.length);
-
-            break;
-        default:
-            break;
-    }
-}
-
-/*********************************************************************
 *********************************************************************/

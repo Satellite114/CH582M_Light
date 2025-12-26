@@ -12,78 +12,180 @@ uint8_t PD_Version = 2;
 PD_Source_Capabilities_TypeDef PD_Source_Capabilities_Inf[7];
 uint8_t PD_Source_Capabilities_Inf_num = 0;
 
-
-void i2c_transfer_data(uint8_t addr, uint8_t data_len, uint8_t *data)
+/**
+ * @brief       IIC接口延时函数，用于控制IIC读写速度
+ * @param       无
+ * @retval      无
+ */
+static inline void fusb302_iic_delay(void)
 {
-    uint8_t i = 0;
-
-    // 等待总线空闲
-    while (I2C_GetFlagStatus(I2C_FLAG_BUSY) != RESET);
-
-    // 生成 START
-    I2C_GenerateSTART(ENABLE);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_MODE_SELECT));
-
-    // 发送从机地址 + 写
-    I2C_Send7bitAddress(addr, I2C_Direction_Transmitter);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
-
-    // 发送数据
-    for (i = 0; i < data_len; i++)
-    {
-        while (I2C_GetFlagStatus(I2C_FLAG_TXE) == RESET); // 等待 TXE
-        I2C_SendData(data[i]);
-    }
-
-    // 等待最后一个字节发送完成
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-
-    // 生成 STOP
-    I2C_GenerateSTOP(ENABLE);
+    DelayUs(2);
 }
 
-void i2c_recv_data(uint8_t addr, uint8_t data_len, uint8_t *data)
+/**
+ * @brief       产生IIC起始信号
+ * @param       无
+ * @retval      无
+ */
+static void fusb302_iic_start(void)
 {
-    uint8_t i = 0;
+    FUSB302_IIC_SDA(1);
+    FUSB302_IIC_SCL(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SDA(0);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(0);
+    fusb302_iic_delay();
+}
 
-    // 等待总线空闲
-    while (I2C_GetFlagStatus(I2C_FLAG_BUSY) != RESET);
+/**
+ * @brief       产生IIC停止信号
+ * @param       无
+ * @retval      无
+ */
+static void fusb302_iic_stop(void)
+{
+    FUSB302_IIC_SDA(0);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SDA(1);
+    fusb302_iic_delay();
+}
 
-    // 生成 START
-    I2C_GenerateSTART(ENABLE);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_MODE_SELECT));
+/**
+ * @brief       等待IIC应答信号
+ * @param       无
+ * @retval      0: 应答信号接收成功
+ *              1: 应答信号接收失败
+ */
+static uint8_t fusb302_iic_wait_ack(void)
+{
+    uint8_t waittime = 0;
+    uint8_t rack = 0;
 
-    // 发送从机地址 + 读
-    I2C_Send7bitAddress(addr, I2C_Direction_Receiver);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
+    FUSB302_IIC_SDA(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(1);
+    fusb302_iic_delay();
 
-    // 单字节读取
-    if (data_len == 1)
+    while (FUSB302_IIC_READ_SDA())
     {
-        I2C_AcknowledgeConfig(DISABLE); // 1字节无需ACK
-        I2C_GenerateSTOP(ENABLE);       // STOP在读取前生成
-        while (I2C_GetFlagStatus(I2C_FLAG_RXNE) == RESET);
-        data[0] = I2C_ReceiveData();
-        I2C_AcknowledgeConfig(ENABLE);
+        waittime++;
+
+        if (waittime > 250)
+        {
+            fusb302_iic_stop();
+            rack = 1;
+            break;
+        }
+    }
+
+    FUSB302_IIC_SCL(0);
+    fusb302_iic_delay();
+
+    return rack;
+}
+
+/**
+ * @brief       产生ACK应答信号
+ * @param       无
+ * @retval      无
+ */
+static void fusb302_iic_ack(void)
+{
+    FUSB302_IIC_SDA(0);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(0);
+    fusb302_iic_delay();
+    FUSB302_IIC_SDA(1);
+    fusb302_iic_delay();
+}
+
+/**
+ * @brief       不产生ACK应答信号
+ * @param       无
+ * @retval      无
+ */
+static void fusb302_iic_nack(void)
+{
+    FUSB302_IIC_SDA(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(1);
+    fusb302_iic_delay();
+    FUSB302_IIC_SCL(0);
+    fusb302_iic_delay();
+}
+
+/**
+ * @brief       IIC发送一个字节
+ * @param       dat: 要发送的数据
+ * @retval      无
+ */
+static void fusb302_iic_send_byte(uint8_t dat)
+{
+    uint8_t t;
+
+    for (t = 0; t < 8; t++)
+    {
+        FUSB302_IIC_SDA((dat & 0x80) >> 7);
+        fusb302_iic_delay();
+        FUSB302_IIC_SCL(1);
+        fusb302_iic_delay();
+        FUSB302_IIC_SCL(0);
+        dat <<= 1;
+    }
+    FUSB302_IIC_SDA(1);
+}
+
+/**
+ * @brief       IIC接收一个字节
+ * @param       ack: ack=1时，发送ack; ack=0时，发送nack
+ * @retval      接收到的数据
+ */
+static uint8_t fusb302_iic_recv_byte(uint8_t ack)
+{
+    uint8_t i;
+    uint8_t dat = 0;
+
+    for (i = 0; i < 8; i++)
+    {
+        dat <<= 1;
+        FUSB302_IIC_SCL(1);
+        fusb302_iic_delay();
+
+        if (FUSB302_IIC_READ_SDA())
+        {
+            dat++;
+        }
+
+        FUSB302_IIC_SCL(0);
+        fusb302_iic_delay();
+    }
+
+    if (ack == 0)
+    {
+        fusb302_iic_nack();
     }
     else
     {
-        // 多字节读取
-        for (i = 0; i < data_len; i++)
-        {
-            if (i == data_len - 1) // 倒数第1字节
-            {
-                I2C_AcknowledgeConfig(DISABLE); 
-                I2C_GenerateSTOP(ENABLE);
-            }
-
-            while (I2C_GetFlagStatus(I2C_FLAG_RXNE) == RESET);
-            data[i] = I2C_ReceiveData();
-        }
-        I2C_AcknowledgeConfig(ENABLE);
+        fusb302_iic_ack();
     }
+
+    return dat;
 }
 
+/**
+ * @brief       初始化IIC接口
+ * @param       无
+ * @retval      无
+ */
+void fusb302_iic_init(void)
+{
+    fusb302_iic_stop();
+}
 
 /**
  * @brief   解析PD档位信息
@@ -126,160 +228,247 @@ const uint8_t PD_Resq[14] =
         0x00, 0x00, 0x00, 0x03,
         0xff, 0x14, 0xA1};
 
-uint8_t USB302_Read_Reg(uint8_t REG_ADDR)
+/**
+ * @brief       读FUSB302寄存器
+ * @param       reg: 寄存器地址
+ * @retval      读取到的寄存器值
+ */
+uint8_t fusb302_iic_read_reg(uint8_t reg)
 {
+    uint8_t val;
 
-   uint8_t val = 0;
+    fusb302_iic_start();
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_WRITE);
+    fusb302_iic_wait_ack();
+    fusb302_iic_send_byte(reg);
+    fusb302_iic_wait_ack();
 
-    /* 等待 I2C 空闲 */
-    while (I2C_GetFlagStatus(I2C_FLAG_BUSY) != RESET);
+    fusb302_iic_start(); // Repeated START
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_READ);
+    fusb302_iic_wait_ack();
 
-    /* START */
-    I2C_GenerateSTART(ENABLE);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_MODE_SELECT));
+    val = fusb302_iic_recv_byte(0); // NACK for last byte
 
-    /* 发送器件地址 + 写 */
-    I2C_Send7bitAddress(FUSB302_I2C_ADDR, I2C_Direction_Transmitter);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
-
-    /* 发送寄存器地址 */
-    I2C_SendData(REG_ADDR);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-
-    /* Repeated START */
-    I2C_GenerateSTART(ENABLE);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_MODE_SELECT));
-
-    /* 发送器件地址 + 读 */
-    I2C_Send7bitAddress(FUSB302_I2C_ADDR, I2C_Direction_Receiver);
-    while (!I2C_CheckEvent(I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
-
-    /* 只读 1 字节 */
-    I2C_GenerateSTOP(ENABLE);
-    while (I2C_GetFlagStatus(I2C_FLAG_RXNE) == RESET);
-    val = I2C_ReceiveData();
+    fusb302_iic_stop();
 
     return val;
 }
 
+/* 兼容旧函数名 */
+uint8_t USB302_Read_Reg(uint8_t REG_ADDR)
+{
+    return fusb302_iic_read_reg(REG_ADDR);
+}
+
+/**
+ * @brief       写FUSB302寄存器
+ * @param       reg: 寄存器地址
+ * @param       val: 要写入的值
+ * @retval      0: 成功, 1: 失败
+ */
+uint8_t fusb302_iic_write_reg(uint8_t reg, uint8_t val)
+{
+    uint8_t ret;
+
+    fusb302_iic_start();
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_WRITE);
+    fusb302_iic_wait_ack();
+    fusb302_iic_send_byte(reg);
+    fusb302_iic_wait_ack();
+    fusb302_iic_send_byte(val);
+    ret = fusb302_iic_wait_ack();
+    fusb302_iic_stop();
+
+    return ret;
+}
+
+/* 兼容旧函数名 */
 void USB302_Wite_Reg(uint8_t addr, uint8_t val)
 {
-    uint8_t buf[2];
-    buf[0] = addr;  // 第一个字节是寄存器地址
-    buf[1] = val;   // 第二个字节是要写入的值
-    
-    i2c_transfer_data(FUSB302_I2C_ADDR, 2, buf);
+    fusb302_iic_write_reg(addr, val);
 }
 
-void USB302_Read_FIFO(uint8_t *pBuf, uint8_t len)
+/**
+ * @brief       读FUSB302 FIFO
+ * @param       pBuf: 接收缓冲区
+ * @param       len: 读取长度
+ * @retval      无
+ */
+void fusb302_iic_read_fifo(uint8_t *pBuf, uint8_t len)
 {
+    uint8_t buf_index;
     const uint8_t FIFO_ADDR = 0x43;
 
-    i2c_transfer_data(FUSB302_I2C_ADDR, 1, &FIFO_ADDR);
-    i2c_recv_data(FUSB302_I2C_ADDR, len, pBuf);
-}
+    fusb302_iic_start();
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_WRITE);
+    fusb302_iic_wait_ack();
+    fusb302_iic_send_byte(FIFO_ADDR);
+    fusb302_iic_wait_ack();
 
-void USB302_Wite_FIFO(uint8_t *data, uint8_t length)
-{
-    const uint8_t FIFO_ADDR = 0x43;
-    uint8_t buf[length + 1];
+    fusb302_iic_start(); // Repeated START
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_READ);
+    fusb302_iic_wait_ack();
 
-    // 第 0 个字节放寄存器地址
-    buf[0] = FIFO_ADDR;
-
-    // 后续字节放要写入的数据
-    for (uint8_t i = 0; i < length; i++)
+    for (buf_index = 0; buf_index < len - 1; buf_index++)
     {
-        buf[i + 1] = data[i];
+        pBuf[buf_index] = fusb302_iic_recv_byte(1); // ACK
     }
 
-    // 调用 CH582M I2C 写函数
-    // i2c_transfer_data(addr, 数据长度, 数据指针)
-    i2c_transfer_data(FUSB302_I2C_ADDR, length + 1, buf);
+    pBuf[buf_index] = fusb302_iic_recv_byte(0); // NACK for last byte
+
+    fusb302_iic_stop();
+}
+
+/* 兼容旧函数名 */
+void USB302_Read_FIFO(uint8_t *pBuf, uint8_t len)
+{
+    fusb302_iic_read_fifo(pBuf, len);
+}
+
+/**
+ * @brief       写FUSB302 FIFO
+ * @param       data: 要写入的数据
+ * @param       length: 数据长度
+ * @retval      无
+ */
+void fusb302_iic_write_fifo(uint8_t *data, uint8_t length)
+{
+    uint8_t i;
+    const uint8_t FIFO_ADDR = 0x43;
+
+    if (length == 0)
+        return;
+
+    fusb302_iic_start();
+    fusb302_iic_send_byte((FUSB302_I2C_ADDR << 1) | FUSB302_IIC_WRITE);
+    fusb302_iic_wait_ack();
+    fusb302_iic_send_byte(FIFO_ADDR);
+    fusb302_iic_wait_ack();
+
+    for (i = 0; i < length; i++)
+    {
+        fusb302_iic_send_byte(data[i]);
+        fusb302_iic_wait_ack();
+    }
+
+    fusb302_iic_stop();
+}
+
+/* 兼容旧函数名 */
+void USB302_Wite_FIFO(uint8_t *data, uint8_t length)
+{
+    fusb302_iic_write_fifo(data, length);
 }
 
 void Check_USB302(void)
 {
     uint8_t Read_Back;
+
+    printf("\n=== FUSB302 IIC Communication Test ===\n");
+
+    // Test 1: Read Device ID register (0x01)
     Read_Back = USB302_Read_Reg(0x01);
     printf("Read_Back FUSB302 chip ID :0X%x\n", Read_Back);
-    if (Read_Back ==0x91) // 读到的ID只可能是0x80 0x81 0x82 中的一个 代表版本号
+
+    if (Read_Back == 0x91 || Read_Back == 0x90 || Read_Back == 0x92)
+    {
         printf("Check_USB302 IS OK \n");
+        printf("  Version: %d, Revision: %d\n", (Read_Back >> 4) & 0x0F, Read_Back & 0x0F);
+    }
+    else if (Read_Back == 0xFF)
+    {
+        printf("Check_USB302 IS ERR - Read 0xFF\n");
+        printf("  Possible reasons:\n");
+        printf("  1. IIC pins not configured\n");
+        printf("  2. FUSB302 not connected or damaged\n");
+        printf("  3. IIC address error (current:0x%02X)\n", FUSB302_I2C_ADDR);
+        printf("  4. Pull-up resistor missing\n");
+    }
+    else if (Read_Back == 0x00)
+    {
+        printf("Check_USB302 IS ERR - Read 0x00\n");
+        printf("  Possible reason: SDA pulled low, check hardware\n");
+    }
     else
-        printf("Check_USB302 IS ERR \n");
+    {
+        printf("Check_USB302 IS ERR - Unknown ID: 0x%02X\n", Read_Back);
+    }
+
+    printf("=======================================\n\n");
 }
 
 // 检测cc脚上是否有连接
 // 返回 0 失败， 1 成功
 uint8_t USB302_Chech_CCx(void)
 {
-        uint8_t Read_State;
-  USB302_Wite_Reg(0x0C, 0x02); // PD Reset
-  USB302_Wite_Reg(0x0C, 0x03); // Reset FUSB302
-  DelayMs(5);
-  USB302_Wite_Reg(0x0B, 0x0F); // FULL POWER!
-  USB302_Wite_Reg(0x02, 0x07); // Switch on MEAS_CC1
-  DelayMs(2);
-  Read_State=USB302_Read_Reg(0x40);//读状态
-  USB302_Wite_Reg(0x02, 0x03);//切换到初始状态
-  Read_State&=0x03;//只看低2位 看主机有没有电压
-  if(Read_State>0)
-  { 
-    CCx_PIN_Useful=1;
-    return 1;
-  }
-  USB302_Wite_Reg(0x02, 0x0B); // Switch on MEAS_CC2
-  DelayMs(2);  
-  Read_State=USB302_Read_Reg(0x40);//读状态
-  USB302_Wite_Reg(0x02, 0x03);//切换到初始状态
-  Read_State&=0x03;//只看低2位 看主机有没有电压
+    uint8_t Read_State;
+    USB302_Wite_Reg(0x0C, 0x02); // PD Reset
+    USB302_Wite_Reg(0x0C, 0x03); // Reset FUSB302
+    DelayMs(5);
+    USB302_Wite_Reg(0x0B, 0x0F); // FULL POWER!
+    USB302_Wite_Reg(0x02, 0x07); // Switch on MEAS_CC1
+    DelayMs(2);
+    Read_State = USB302_Read_Reg(0x40); // 读状态
+    USB302_Wite_Reg(0x02, 0x03);        // 切换到初始状态
+    Read_State &= 0x03;                 // 只看低2位 看主机有没有电压
+    if (Read_State > 0)
+    {
+        CCx_PIN_Useful = 1;
+        return 1;
+    }
+    USB302_Wite_Reg(0x02, 0x0B); // Switch on MEAS_CC2
+    DelayMs(2);
+    Read_State = USB302_Read_Reg(0x40); // 读状态
+    USB302_Wite_Reg(0x02, 0x03);        // 切换到初始状态
+    Read_State &= 0x03;                 // 只看低2位 看主机有没有电压
 
-  if(Read_State>0)
-  { 
-    CCx_PIN_Useful=2;
-    return 1;
-  } 
-  return 0;
+    if (Read_State > 0)
+    {
+        CCx_PIN_Useful = 2;
+        return 1;
+    }
+    return 0;
 }
 
-//返回 0 失败， 1 成功
+// 返回 0 失败， 1 成功
 uint8_t USB302_Init(void)
-{  
-  printf("Checking PD UFP..\n");
-  if(USB302_Chech_CCx()==0)return 0;//检查有没有接着设备
-  USB302_Wite_Reg(0x09, 0x40);//发送硬件复位包
-  USB302_Wite_Reg(0x0C, 0x03); // Reset FUSB302
-  DelayMs(5);  
-  USB302_Wite_Reg(0x09, 0x07);//使能自动重试 3次自动重试
-  USB302_Wite_Reg(0x0E, 0xFC);//使能各种中断
-  //USB302_Wite_Reg(0x0F, 0xFF);
-  USB302_Wite_Reg(0x0F, 0x01);
-  USB302_Wite_Reg(0x0A, 0xEF);
-  USB302_Wite_Reg(0x06, 0x00);//清空各种状态
-  USB302_Wite_Reg(0x0C, 0x02);//复位PD
-  if(CCx_PIN_Useful==1)
-  {
-    //USB302_Wite_Reg(0x02, 0x07); // Switch on MEAS_CC1
-    USB302_Wite_Reg(0x02, 0x05); // Switch on MEAS_CC1
-    USB302_Wite_Reg(0x03, 0x41); // Enable BMC Tx on_CC1 PD3.0
-    //USB302_Wite_Reg(0x03, 0x45); // Enable BMC Tx on_CC1 PD3.0 AutoCRC
-  }
-  else if(CCx_PIN_Useful==2)
-  {
-    //USB302_Wite_Reg(0x02, 0x0B); // Switch on MEAS_CC2 
-    USB302_Wite_Reg(0x02, 0x0A); // Switch on MEAS_CC2 
-    USB302_Wite_Reg(0x03, 0x42); // Enable BMC Tx on CC2 PD3.0
-    //USB302_Wite_Reg(0x03, 0x46); // Enable BMC Tx on_CC1 PD3.0 AutoCRC
-  }
-  USB302_Wite_Reg(0x0B, 0x0F);//全电源
-  USB302_Read_Reg(0x3E);
-  USB302_Read_Reg(0x3F);
-  USB302_Read_Reg(0x42);
-  RX_Length=0;
-  PD_STEP=0;
-  PD_Source_Capabilities_Inf_num=0;  
-/*  USB302_Wite_Reg(0x07, 0x04); // Flush RX*/
-  return 1;      
+{
+    printf("Checking PD UFP..\n");
+    if (USB302_Chech_CCx() == 0)
+        return 0;                // 检查有没有接着设备
+    USB302_Wite_Reg(0x09, 0x40); // 发送硬件复位包
+    USB302_Wite_Reg(0x0C, 0x03); // Reset FUSB302
+    DelayMs(5);
+    USB302_Wite_Reg(0x09, 0x07); // 使能自动重试 3次自动重试
+    USB302_Wite_Reg(0x0E, 0xFC); // 使能各种中断
+    // USB302_Wite_Reg(0x0F, 0xFF);
+    USB302_Wite_Reg(0x0F, 0x01);
+    USB302_Wite_Reg(0x0A, 0xEF);
+    USB302_Wite_Reg(0x06, 0x00); // 清空各种状态
+    USB302_Wite_Reg(0x0C, 0x02); // 复位PD
+    if (CCx_PIN_Useful == 1)
+    {
+        // USB302_Wite_Reg(0x02, 0x07); // Switch on MEAS_CC1
+        USB302_Wite_Reg(0x02, 0x05); // Switch on MEAS_CC1
+        USB302_Wite_Reg(0x03, 0x41); // Enable BMC Tx on_CC1 PD3.0
+                                     // USB302_Wite_Reg(0x03, 0x45); // Enable BMC Tx on_CC1 PD3.0 AutoCRC
+    }
+    else if (CCx_PIN_Useful == 2)
+    {
+        // USB302_Wite_Reg(0x02, 0x0B); // Switch on MEAS_CC2
+        USB302_Wite_Reg(0x02, 0x0A); // Switch on MEAS_CC2
+        USB302_Wite_Reg(0x03, 0x42); // Enable BMC Tx on CC2 PD3.0
+                                     // USB302_Wite_Reg(0x03, 0x46); // Enable BMC Tx on_CC1 PD3.0 AutoCRC
+    }
+    USB302_Wite_Reg(0x0B, 0x0F); // 全电源
+    USB302_Read_Reg(0x3E);
+    USB302_Read_Reg(0x3F);
+    USB302_Read_Reg(0x42);
+    RX_Length = 0;
+    PD_STEP = 0;
+    PD_Source_Capabilities_Inf_num = 0;
+    /*  USB302_Wite_Reg(0x07, 0x04); // Flush RX*/
+    return 1;
 }
 
 void FUSB30XRefreshStatusRegister(void)
@@ -325,7 +514,7 @@ void USB302_Data_Service(void) // 数据服务
             i = USB302_RX_Buff[2] & 0x70; // bit14~12表示控制消息还是数据消息，控制消息为0，非零为数据消息，表示包含的电压种类
             if (i == 0)                   // 控制消息
             {
-                 printf("control message\r\n");
+                // printf("control message\r\n");
                 i = (USB302_RX_Buff[1] & 0x07); // 获取包类型
                 switch (i)
                 {
@@ -350,7 +539,7 @@ void USB302_Data_Service(void) // 数据服务
             }
             else // 数据消息
             {
-                 printf("data message\r\n");
+                // printf("data message\r\n");
                 if ((USB302_RX_Buff[1] & 0x07) == 0x01) // Source_Capabilities
                 {
                     if (PD_STEP == 0)
@@ -387,9 +576,8 @@ void USB302_Data_Service(void) // 数据服务
                             j++;
                     }
                     PD_Source_Capabilities_Inf_num = j;
-                    printf("该适配器支持%d种输出\n", PD_Source_Capabilities_Inf_num);
+                    printf("Adapter supports %d outputs\n", PD_Source_Capabilities_Inf_num);
                     PD_STEP = 2;
-                   
                 }
             }
         }
@@ -420,6 +608,40 @@ void USB302_Send_Requse(uint8_t objects)
     PD_Msg_ID_ADD();             // 加包
 }
 
+void USB302_Send_Min_Request(void)
+{
+    uint8_t pd_buf[6];
+
+    /* -------- PD Header -------- */
+    pd_buf[0] = 0x12; // Header LSB: Request, 1 Data Object
+    pd_buf[1] = 0x10; // Header MSB: Sink, UFP, PD2.0
+
+    /* -------- Request Data Object -------- */
+    pd_buf[2] = 0x64; // Operating Current LSB (1A)
+    pd_buf[3] = 0x64; // Max Current LSB (1A)
+    pd_buf[4] = 0x10; // PDO index = 1
+    pd_buf[5] = 0x00;
+
+    /* -------- TX 必须步骤 -------- */
+    USB302_Wite_Reg(0x07, 0x04); // Flush TX FIFO
+    USB302_Wite_FIFO(pd_buf, 6); // Write Header + Data
+    USB302_Wite_Reg(0x09, 0x01); // Send TX
+}
+
+void USB302_Check_TX_Result(void)
+{
+    uint8_t intA = USB302_Read_Reg(0x3E);
+    uint8_t intB = USB302_Read_Reg(0x3F);
+
+    printf("INT_A=%02X INT_B=%02X\r\n", intA, intB);
+
+    if (intA & 0x02) // TX_SUCCESS（以 datasheet 为准）
+        printf("PD Request TX SUCCESS\r\n");
+
+    if (intA & 0x01) // TX_FAIL
+        printf("PD Request TX FAIL\r\n");
+}
+
 void USB302_Get_Data(void)
 {
     uint8_t i = 0;
@@ -433,11 +655,11 @@ void USB302_Get_Data(void)
             {
                 cachecur = ((PD_Source_Capabilities_Inf[i].PDC_INF[1] & 0x03) << 8) | (PD_Source_Capabilities_Inf[i].PDC_INF[0]);        /*****读取一组电流******/
                 cachecur *= 10;                                                                                                          // 10ma
-                cachevol = ((PD_Source_Capabilities_Inf[i].PDC_INF[2] & 0x0F) << 8) | (PD_Source_Capabilities_Inf[i].PDC_INF[1] & 0xFC); /*****读取一组电压******/
+                cachevol = ((PD_Source_Capabilities_Inf[i].PDC_INF[2] & 0x0F) << 8) | (PD_Source_Capabilities_Inf[i].PDC_INF[1] & 0xFC); /*****Read voltage******/
                 cachevol >>= 2;
                 cachevol *= 50; // 50mv
-                printf("cachevol %dV\n", cachevol / 1000);
-                printf("cachecur %fA\n", (float)cachecur / 1000.0);
+                printf("Voltage: %dV\n", cachevol / 1000);
+                printf("Current: %d mA\n", cachecur);
             }
         }
         PD_STEP = 3;
